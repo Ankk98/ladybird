@@ -3418,10 +3418,30 @@ void HTMLParser::handle_in_row(HTMLToken& token)
         return;
     }
 
-    // -> A start tag whose tag name is one of: "caption", "col", "colgroup", "tbody", "tfoot", "thead", "tr"
+    // -> A start tag whose tag name is one of: "caption", "col", "colgroup", "tbody", "tfoot", "thead"
     // -> An end tag whose tag name is "table"
-    if ((token.is_start_tag() && token.tag_name().is_one_of(HTML::TagNames::caption, HTML::TagNames::col, HTML::TagNames::colgroup, HTML::TagNames::tbody, HTML::TagNames::tfoot, HTML::TagNames::thead, HTML::TagNames::tr))
+    if ((token.is_start_tag() && token.tag_name().is_one_of(HTML::TagNames::caption, HTML::TagNames::col, HTML::TagNames::colgroup, HTML::TagNames::tbody, HTML::TagNames::tfoot, HTML::TagNames::thead))
         || (token.is_end_tag() && token.tag_name() == HTML::TagNames::table)) {
+
+        // Special case: if we're in fragment parsing and have foreign content in the stack,
+        // don't apply table restructuring logic - just ignore these tokens
+        if (m_parsing_fragment) {
+            for (auto& element : m_stack_of_open_elements.elements()) {
+                if (element->namespace_uri() != Namespace::HTML) {
+                    log_parse_error();
+                    return; // Ignore the token
+                }
+            }
+        }
+
+        // If the stack of open elements does not have a tbody, thead, or tfoot element
+        // in table scope, this is a parse error; ignore the token.
+        if (!m_stack_of_open_elements.has_in_table_scope(HTML::TagNames::tbody)
+            && !m_stack_of_open_elements.has_in_table_scope(HTML::TagNames::thead)
+            && !m_stack_of_open_elements.has_in_table_scope(HTML::TagNames::tfoot)) {
+            log_parse_error();
+            return;
+        }
 
         // If the stack of open elements does not have a tr element in table scope, this is a parse error; ignore the token.
         if (!m_stack_of_open_elements.has_in_table_scope(HTML::TagNames::tr)) {
@@ -3474,6 +3494,28 @@ void HTMLParser::handle_in_row(HTMLToken& token)
     if (token.is_end_tag() && token.tag_name().is_one_of(HTML::TagNames::body, HTML::TagNames::caption, HTML::TagNames::col, HTML::TagNames::colgroup, HTML::TagNames::html, HTML::TagNames::td, HTML::TagNames::th)) {
         // Parse error. Ignore the token.
         log_parse_error();
+        return;
+    }
+
+    // -> A start tag whose tag name is "svg"
+    if (token.is_start_tag() && token.tag_name() == HTML::TagNames::svg) {
+        // Reconstruct the active formatting elements, if any.
+        reconstruct_the_active_formatting_elements();
+
+        // Adjust SVG attributes for the token. (This fixes the case of SVG attributes that are not all lowercase.)
+        adjust_svg_attributes(token);
+
+        // Adjust foreign attributes for the token. (This fixes the use of namespaced attributes, in particular XLink in SVG.)
+        adjust_foreign_attributes(token);
+
+        // Insert a foreign element for the token, with SVG namespace and false.
+        (void)insert_foreign_element(token, Namespace::SVG, OnlyAddToElementStack::No);
+
+        // If the token has its self-closing flag set, pop the current node off the stack of open elements and acknowledge the token's self-closing flag.
+        if (token.is_self_closing()) {
+            (void)m_stack_of_open_elements.pop();
+            token.acknowledge_self_closing_flag_if_set();
+        }
         return;
     }
 
@@ -3563,6 +3605,31 @@ void HTMLParser::handle_in_cell(HTMLToken& token)
         // Otherwise, close the cell (see below) and reprocess the token.
         close_the_cell();
         process_using_the_rules_for(m_insertion_mode, token);
+        return;
+    }
+
+    // -> A start tag whose tag name is "svg"
+    if (token.is_start_tag() && token.tag_name() == HTML::TagNames::svg) {
+        // Process the token using the rules for the "in body" insertion mode.
+        // (SVG elements are handled the same as in body mode)
+
+        // Reconstruct the active formatting elements, if any.
+        reconstruct_the_active_formatting_elements();
+
+        // Adjust SVG attributes for the token.
+        adjust_svg_attributes(token);
+
+        // Adjust foreign attributes for the token.
+        adjust_foreign_attributes(token);
+
+        // Insert a foreign element for the token, with SVG namespace and false.
+        (void)insert_foreign_element(token, Namespace::SVG, OnlyAddToElementStack::No);
+
+        // If the token has its self-closing flag set, pop the current node off the stack of open elements and acknowledge the token's self-closing flag.
+        if (token.is_self_closing()) {
+            (void)m_stack_of_open_elements.pop();
+            token.acknowledge_self_closing_flag_if_set();
+        }
         return;
     }
 
@@ -3668,6 +3735,17 @@ void HTMLParser::handle_in_table_body(HTMLToken& token)
     if ((token.is_start_tag() && token.tag_name().is_one_of(HTML::TagNames::caption, HTML::TagNames::col, HTML::TagNames::colgroup, HTML::TagNames::tbody, HTML::TagNames::tfoot, HTML::TagNames::thead))
         || (token.is_end_tag() && token.tag_name() == HTML::TagNames::table)) {
 
+        // Special case: if we're in fragment parsing and have foreign content in the stack,
+        // don't apply table restructuring logic - just ignore these tokens
+        if (m_parsing_fragment) {
+            for (auto& element : m_stack_of_open_elements.elements()) {
+                if (element->namespace_uri() != Namespace::HTML) {
+                    log_parse_error();
+                    return; // Ignore the token
+                }
+            }
+        }
+
         // If the stack of open elements does not have a tbody, thead, or tfoot element in table scope, this is a parse
         // error; ignore the token.
         if (!m_stack_of_open_elements.has_in_table_scope(HTML::TagNames::tbody)
@@ -3694,6 +3772,28 @@ void HTMLParser::handle_in_table_body(HTMLToken& token)
     if (token.is_end_tag() && token.tag_name().is_one_of(HTML::TagNames::body, HTML::TagNames::caption, HTML::TagNames::col, HTML::TagNames::colgroup, HTML::TagNames::html, HTML::TagNames::td, HTML::TagNames::th, HTML::TagNames::tr)) {
         // Parse error. Ignore the token.
         log_parse_error();
+        return;
+    }
+
+    // -> A start tag whose tag name is "svg"
+    if (token.is_start_tag() && token.tag_name() == HTML::TagNames::svg) {
+        // Reconstruct the active formatting elements, if any.
+        reconstruct_the_active_formatting_elements();
+
+        // Adjust SVG attributes for the token.
+        adjust_svg_attributes(token);
+
+        // Adjust foreign attributes for the token.
+        adjust_foreign_attributes(token);
+
+        // Insert a foreign element for the token, with SVG namespace and false.
+        (void)insert_foreign_element(token, Namespace::SVG, OnlyAddToElementStack::No);
+
+        // If the token has its self-closing flag set, pop the current node off the stack of open elements and acknowledge the token's self-closing flag.
+        if (token.is_self_closing()) {
+            (void)m_stack_of_open_elements.pop();
+            token.acknowledge_self_closing_flag_if_set();
+        }
         return;
     }
 
@@ -3784,6 +3884,18 @@ void HTMLParser::handle_in_table(HTMLToken& token)
 
     // -> A start tag whose tag name is one of: "td", "th", "tr"
     if (token.is_start_tag() && token.tag_name().is_one_of(HTML::TagNames::td, HTML::TagNames::th, HTML::TagNames::tr)) {
+
+        // Special case: if we're in fragment parsing and have foreign content in the stack,
+        // don't apply table restructuring logic - just ignore these tokens
+        if (m_parsing_fragment) {
+            for (auto& element : m_stack_of_open_elements.elements()) {
+                if (element->namespace_uri() != Namespace::HTML) {
+                    log_parse_error();
+                    return; // Ignore the token
+                }
+            }
+        }
+
         // Clear the stack back to a table context.
         clear_the_stack_back_to_a_table_context();
 
@@ -3899,6 +4011,36 @@ void HTMLParser::handle_in_table(HTMLToken& token)
     if (token.is_end_of_file()) {
         // Process the token using the rules for the "in body" insertion mode.
         process_using_the_rules_for(InsertionMode::InBody, token);
+        return;
+    }
+
+    // -> A start tag whose tag name is "svg"
+    if (token.is_start_tag() && token.tag_name() == HTML::TagNames::svg) {
+        // Parse error.
+        log_parse_error();
+
+        // Enable foster parenting, process the token using the rules for the "in body" insertion mode, and then disable foster parenting.
+        m_foster_parenting = true;
+
+        // Reconstruct the active formatting elements, if any.
+        reconstruct_the_active_formatting_elements();
+
+        // Adjust SVG attributes for the token.
+        adjust_svg_attributes(token);
+
+        // Adjust foreign attributes for the token.
+        adjust_foreign_attributes(token);
+
+        // Insert a foreign element for the token, with SVG namespace and false.
+        (void)insert_foreign_element(token, Namespace::SVG, OnlyAddToElementStack::No);
+
+        // If the token has its self-closing flag set, pop the current node off the stack of open elements and acknowledge the token's self-closing flag.
+        if (token.is_self_closing()) {
+            (void)m_stack_of_open_elements.pop();
+            token.acknowledge_self_closing_flag_if_set();
+        }
+
+        m_foster_parenting = false;
         return;
     }
 
@@ -4230,6 +4372,30 @@ void HTMLParser::handle_in_caption(HTMLToken& token)
     if (token.is_end_tag() && token.tag_name().is_one_of(HTML::TagNames::body, HTML::TagNames::col, HTML::TagNames::colgroup, HTML::TagNames::html, HTML::TagNames::tbody, HTML::TagNames::td, HTML::TagNames::tfoot, HTML::TagNames::th, HTML::TagNames::thead, HTML::TagNames::tr)) {
         // Parse error. Ignore the token.
         log_parse_error();
+        return;
+    }
+
+    // -> A start tag whose tag name is "svg"
+    if (token.is_start_tag() && token.tag_name() == HTML::TagNames::svg) {
+        // Process the token using the rules for the "in body" insertion mode.
+
+        // Reconstruct the active formatting elements, if any.
+        reconstruct_the_active_formatting_elements();
+
+        // Adjust SVG attributes for the token.
+        adjust_svg_attributes(token);
+
+        // Adjust foreign attributes for the token.
+        adjust_foreign_attributes(token);
+
+        // Insert a foreign element for the token, with SVG namespace and false.
+        (void)insert_foreign_element(token, Namespace::SVG, OnlyAddToElementStack::No);
+
+        // If the token has its self-closing flag set, pop the current node off the stack of open elements and acknowledge the token's self-closing flag.
+        if (token.is_self_closing()) {
+            (void)m_stack_of_open_elements.pop();
+            token.acknowledge_self_closing_flag_if_set();
+        }
         return;
     }
 
