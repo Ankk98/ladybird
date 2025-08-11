@@ -1,7 +1,19 @@
-// SPDX-License-Identifier: BSD-2-Clause
+#import <SVG/SVGElement.idl>
+#import <SVG/SVGURIReference.idl>
+#import <SVG/SVGFitToViewBox.idl>
 
-    [
-    Exposed=Window
-    ]
+// https://www.w3.org/TR/SVG11/pservers.html#PatternElement
+[Exposed=Window]
 interface SVGPatternElement : SVGElement {
+    [FIXME, SameObject, ImplementedAs=pattern_units_for_bindings] readonly attribute SVGAnimatedEnumeration patternUnits;
+    [FIXME, SameObject, ImplementedAs=pattern_content_units_for_bindings] readonly attribute SVGAnimatedEnumeration patternContentUnits;
+    [FIXME, SameObject, ImplementedAs=pattern_transform_for_bindings] readonly attribute SVGAnimatedTransformList patternTransform;
+
+    [SameObject] readonly attribute SVGAnimatedLength x;
+    [SameObject] readonly attribute SVGAnimatedLength y;
+    [SameObject] readonly attribute SVGAnimatedLength width;
+    [SameObject] readonly attribute SVGAnimatedLength height;
 };
+
+SVGPatternElement includes SVGFitToViewBox;
+SVGPatternElement includes SVGURIReference;

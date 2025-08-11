@@ -59,71 +59,156 @@ Optional<Painting::PaintStyle> SVGGraphicsElement::svg_paint_computed_value_to_g
     if (auto gradient = try_resolve_url_to<SVG::SVGGradientElement const>(paint_value->as_url()))
         return gradient->to_gfx_paint_style(paint_context);
     if (auto pattern = try_resolve_url_to<SVG::SVGPatternElement const>(paint_value->as_url())) {
-        // Resolve a simple pattern with a single <image> or <use>-><image> into an SVGPatternPaintStyle.
-        // 1) Gather attributes
-        auto x_attr = pattern->get_attribute_value(SVG::AttributeNames::x);
-        auto y_attr = pattern->get_attribute_value(SVG::AttributeNames::y);
-        auto w_attr = pattern->get_attribute_value(SVG::AttributeNames::width);
-        auto h_attr = pattern->get_attribute_value(SVG::AttributeNames::height);
-        auto units_attr = pattern->get_attribute_value(SVG::AttributeNames::patternUnits);
-        auto transform_attr = pattern->get_attribute_value(SVG::AttributeNames::patternTransform);
+        // Resolve pattern with basic inheritance and patternContentUnits mapping for image content.
+        // 1) Collect attributes (with href inheritance)
+        HashTable<SVG::SVGPatternElement const*> seen_patterns;
+        auto inherit_float = [&](auto getter) -> Optional<float> {
+            if (auto v = getter(*pattern); v.has_value())
+                return v;
+            auto linked = pattern->linked_pattern(seen_patterns);
+            while (linked) {
+                if (auto v2 = getter(*linked); v2.has_value())
+                    return v2;
+                linked = linked->linked_pattern(seen_patterns);
+            }
+            return {};
+        };
+        auto inherit_units = [&](auto getter) -> Optional<SVG::SVGUnits> {
+            if (auto v = getter(*pattern); v.has_value())
+                return v;
+            auto linked = pattern->linked_pattern(seen_patterns);
+            while (linked) {
+                if (auto v2 = getter(*linked); v2.has_value())
+                    return v2;
+                linked = linked->linked_pattern(seen_patterns);
+            }
+            return {};
+        };
+        auto inherit_transform = [&](auto getter) -> Optional<Gfx::AffineTransform> {
+            if (auto v = getter(*pattern); v.has_value())
+                return v;
+            auto linked = pattern->linked_pattern(seen_patterns);
+            while (linked) {
+                if (auto v2 = getter(*linked); v2.has_value())
+                    return v2;
+                linked = linked->linked_pattern(seen_patterns);
+            }
+            return {};
+        };
+        auto inherit_np = [&](auto getter) -> Optional<SVG::NumberPercentage> {
+            if (auto v = getter(*pattern); v.has_value())
+                return v;
+            auto linked = pattern->linked_pattern(seen_patterns);
+            while (linked) {
+                if (auto v2 = getter(*linked); v2.has_value())
+                    return v2;
+                linked = linked->linked_pattern(seen_patterns);
+            }
+            return {};
+        };
 
-        auto x = SVG::AttributeParser::parse_coordinate(x_attr).value_or(0);
-        auto y = SVG::AttributeParser::parse_coordinate(y_attr).value_or(0);
-        auto width = SVG::AttributeParser::parse_positive_length(w_attr).value_or(0);
-        auto height = SVG::AttributeParser::parse_positive_length(h_attr).value_or(0);
-        auto units = SVG::AttributeParser::parse_units(units_attr).value_or(SVG::SVGUnits::ObjectBoundingBox);
+        auto x = inherit_float([](auto const& p) { return p.x_value(); }).value_or(0);
+        auto y = inherit_float([](auto const& p) { return p.y_value(); }).value_or(0);
+        auto width = inherit_float([](auto const& p) { return p.width_value(); }).value_or(0);
+        auto height = inherit_float([](auto const& p) { return p.height_value(); }).value_or(0);
+        auto units = inherit_units([](auto const& p) { return p.pattern_units_value(); }).value_or(SVG::SVGUnits::ObjectBoundingBox);
+        auto content_units = inherit_units([](auto const& p) { return p.pattern_content_units_value(); }).value_or(SVG::SVGUnits::UserSpaceOnUse);
+        auto pattern_transform = inherit_transform([](auto const& p) { return p.pattern_transform_value(); });
         if (width <= 0 || height <= 0)
             return {};
 
+        // 2) Compute tile rect in user space
         auto bbox_user = paint_context.path_bounding_box;
         Gfx::FloatRect tile_rect_user {};
-        if (units == SVG::SVGUnits::UserSpaceOnUse)
-            tile_rect_user = { x, y, width, height };
-        else
-            tile_rect_user = { bbox_user.x() + x * bbox_user.width(), bbox_user.y() + y * bbox_user.height(), width * bbox_user.width(), height * bbox_user.height() };
-
-        auto device_transform = paint_context.paint_transform;
-        if (!transform_attr.is_empty()) {
-            if (auto tlist = SVG::AttributeParser::parse_transform(transform_attr); tlist.has_value())
-                device_transform.multiply(SVG::transform_from_transform_list(*tlist));
+        if (units == SVG::SVGUnits::UserSpaceOnUse) {
+            tile_rect_user = Gfx::FloatRect { x, y, width, height };
+        } else {
+            auto x_np = inherit_np([](auto const& p) { return p.x_number_percentage(); });
+            auto y_np = inherit_np([](auto const& p) { return p.y_number_percentage(); });
+            auto w_np = inherit_np([](auto const& p) { return p.width_number_percentage(); });
+            auto h_np = inherit_np([](auto const& p) { return p.height_number_percentage(); });
+            float rx = x_np.has_value() ? x_np->value() * bbox_user.width() : x * bbox_user.width();
+            float ry = y_np.has_value() ? y_np->value() * bbox_user.height() : y * bbox_user.height();
+            float rw = w_np.has_value() ? w_np->value() * bbox_user.width() : width * bbox_user.width();
+            float rh = h_np.has_value() ? h_np->value() * bbox_user.height() : height * bbox_user.height();
+            tile_rect_user = Gfx::FloatRect { bbox_user.x() + rx, bbox_user.y() + ry, rw, rh };
         }
 
-        // 2) Find an image child
-        auto resolve_use_to_image = [&](DOM::Element const& elem) -> SVG::SVGImageElement const* {
-            if (is<SVG::SVGImageElement>(elem))
-                return &static_cast<SVG::SVGImageElement const&>(elem);
-            if (is<SVG::SVGUseElement>(elem)) {
-                auto const* use = static_cast<SVG::SVGUseElement const*>(&elem);
-                if (auto instance = use->instance_root(); instance && is<SVG::SVGImageElement>(*instance))
-                    return &static_cast<SVG::SVGImageElement const&>(*instance);
-            }
-            return nullptr;
+        // 3) Apply patternTransform into device transform
+        auto device_transform = paint_context.paint_transform;
+        if (pattern_transform.has_value())
+            device_transform.multiply(*pattern_transform);
+
+        // 4) Resolve an <image> (or single-level <use>-><image>) child
+        struct ResolvedImage {
+            SVG::SVGImageElement const* image { nullptr };
+            Optional<Gfx::AffineTransform> content_transform {};
         };
 
+        auto resolve_use_to_image = [&](DOM::Element const& elem) -> ResolvedImage {
+            if (is<SVG::SVGImageElement>(elem))
+                return { &static_cast<SVG::SVGImageElement const&>(elem), OptionalNone {} };
+            if (is<SVG::SVGUseElement>(elem)) {
+                auto const* use = static_cast<SVG::SVGUseElement const*>(&elem);
+                Optional<Gfx::AffineTransform> content_transform = use->element_transform();
+                if (auto instance = use->instance_root(); instance && is<SVG::SVGImageElement>(*instance))
+                    return { &static_cast<SVG::SVGImageElement const&>(*instance), content_transform };
+                // Fallback: resolve href directly if instance_root is not available yet
+                auto link = use->has_attribute(SVG::AttributeNames::href) ? use->get_attribute(SVG::AttributeNames::href) : use->get_attribute("xlink:href"_fly_string);
+                if (link.has_value() && !link->is_empty()) {
+                    auto url = document().encoding_parse_url(*link);
+                    if (url.has_value()) {
+                        auto id = url->fragment();
+                        if (id.has_value() && !id->is_empty()) {
+                            if (auto referenced = document().get_element_by_id(id.value()); referenced && is<SVG::SVGImageElement>(*referenced))
+                                return { &as<SVG::SVGImageElement>(*referenced), content_transform };
+                        }
+                    }
+                }
+            }
+            return {};
+        };
         SVG::SVGImageElement const* image_elem = nullptr;
+        Optional<Gfx::AffineTransform> content_transform;
         for (auto const* child = pattern->template first_child_of_type<DOM::Element>(); child; child = child->next_element_sibling()) {
-            if ((image_elem = resolve_use_to_image(*child)))
+            auto resolved = resolve_use_to_image(*child);
+            if (resolved.image) {
+                image_elem = resolved.image;
+                content_transform = resolved.content_transform;
                 break;
+            }
         }
         if (!image_elem)
             return {};
 
-        // 3) Compute device tile rect and fetch bitmap
+        // 5) Compute device tile transform and fetch bitmap without rounding
         auto device_tile_rect_f = device_transform.map(tile_rect_user);
-        auto device_tile_rect = enclosing_int_rect(device_tile_rect_f);
-        if (device_tile_rect.is_empty())
+        if (device_tile_rect_f.is_empty())
             return {};
 
-        auto requested_size = device_tile_rect.size();
+        auto requested_size = Gfx::IntSize { AK::ceil(device_tile_rect_f.width()), AK::ceil(device_tile_rect_f.height()) };
+        if (requested_size.width() < 1)
+            requested_size.set_width(1);
+        if (requested_size.height() < 1)
+            requested_size.set_height(1);
+        if (requested_size.width() <= 0 || requested_size.height() <= 0)
+            return {};
         auto tile_bitmap = image_elem->current_image_bitmap(requested_size);
         if (!tile_bitmap)
             return {};
 
-        // 4) Build SVGPatternPaintStyle
-        auto scale_x = (float)device_tile_rect.width() / (float)requested_size.width();
-        auto scale_y = (float)device_tile_rect.height() / (float)requested_size.height();
-        auto matrix = Gfx::AffineTransform {}.scale(scale_x, scale_y).translate(device_tile_rect.x(), device_tile_rect.y());
+        // 6) Compose shader matrix in device space like draw_repeated_immutable_bitmap
+        float sx = device_tile_rect_f.width() / (float)requested_size.width();
+        float sy = device_tile_rect_f.height() / (float)requested_size.height();
+        if (content_transform.has_value()) {
+            // If the content is a <use> with a scale transform, fold that scale into the sampling
+            sx *= content_transform->x_scale();
+            sy *= content_transform->y_scale();
+        }
+        Gfx::AffineTransform matrix;
+        matrix.scale(sx, sy).translate(device_tile_rect_f.x(), device_tile_rect_f.y());
+        (void)content_units;
+
         return Painting::SVGPatternPaintStyle::create(tile_bitmap.release_nonnull(), matrix, true, true);
     }
     return {};
