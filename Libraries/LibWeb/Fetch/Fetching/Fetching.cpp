@@ -1058,6 +1058,26 @@ WebIDL::ExceptionOr<GC::Ref<PendingResponse>> http_fetch(JS::Realm& realm, Infra
     // 1. Let request be fetchParams's request.
     auto request = fetch_params.request();
 
+    if (request->current_url().includes_credentials()) {
+        bool allow = false;
+        if (auto client = request->client(); client) {
+            auto const& request_origin = request->current_url().origin();
+            URL::URL top_url = client->top_level_creation_url.has_value() ? client->top_level_creation_url.value() : client->creation_url;
+            auto const& top_origin = top_url.origin();
+            if (request_origin.is_same_origin(top_origin)) {
+                auto req_user = URL::percent_decode(request->current_url().username());
+                auto req_pass = URL::percent_decode(request->current_url().password());
+                auto top_user = URL::percent_decode(top_url.username());
+                auto top_pass = URL::percent_decode(top_url.password());
+                allow = (req_user == top_user) && (req_pass == top_pass);
+            }
+        }
+        if (!allow) {
+            dbgln_if(WEB_FETCH_DEBUG, "Fetch: Blocking request with embedded URL credentials (same-origin/match: {})", allow);
+            return PendingResponse::create(vm, request, Infrastructure::Response::network_error(vm, "Request with embedded credentials was blocked"_string));
+        }
+    }
+
     // 2. Let response and internalResponse be null.
     GC::Ptr<Infrastructure::Response> response;
     GC::Ptr<Infrastructure::Response> internal_response;
