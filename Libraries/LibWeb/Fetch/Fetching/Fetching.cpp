@@ -1974,8 +1974,7 @@ WebIDL::ExceptionOr<GC::Ref<PendingResponse>> http_network_or_cache_fetch(JS::Re
                     auto const& url = http_request->current_url();
                     auto payload = MUST(String::formatted("{}:{}", URL::percent_decode(url.username()), URL::percent_decode(url.password())));
                     auto token = TRY_OR_THROW_OOM(vm, encode_base64(payload.bytes()));
-                    dbgln_if(WEB_FETCH_DEBUG, "Fetch: Constructing Basic Authorization header from URL credentials (username present: {}, password present: {})",
-                        !url.username().is_empty(), !url.password().is_empty());
+                    dbgln_if(WEB_FETCH_DEBUG, "Fetch: Constructing Basic Authorization header from URL credentials (username present: {}, password present: {})", !url.username().is_empty(), !url.password().is_empty());
                     authorization_value = TRY_OR_THROW_OOM(vm, String::formatted("Basic {}", token));
                 }
 
